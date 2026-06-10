@@ -1,0 +1,109 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <RetainVMGarbageCollection>true</RetainVMGarbageCollection>
+    <TieredCompilation>true</TieredCompilation>
+    <!-- BenchmarkDotNet's recommendation: AOT/JIT-friendly release with
+         portable PDBs so we get good stack traces in the export. -->
+    <DebugType>portable</DebugType>
+    <RootNamespace>FulgurNET.Benchmarks</RootNamespace>
+    <AssemblyName>FulgurNET.Benchmarks</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The library we built. -->
+    <ProjectReference Include="..\FulgurNET\FulgurNET.csproj" />
+
+    <!--
+      Direct competitors in the "HTML to PDF" space on .NET. We compare
+      against:
+        * DinkToPdf: the venerable wkhtmltopdf wrapper, still the
+          "default" choice for many .NET shops.
+        * PuppeteerSharp: Chromium headless, the de-facto leader for
+          fidelity, but heavy and slow to start.
+      QuestPDF is intentionally NOT included: it's a fluent PDF API,
+      not an HTML renderer. Comparing it to fulgur is a category
+      mistake.
+    -->
+    <PackageReference Include="DinkToPdf" Version="1.0.8" />
+    <PackageReference Include="PuppeteerSharp" Version="25.1.0" />
+
+    <!--
+      BenchmarkDotNet drives the whole shebang. We pin to the latest
+      0.15.x line (0.15.3 at the time of writing); the package is
+      stable and used by the .NET Runtime team itself.
+    -->
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.3" />
+  </ItemGroup>
+
+  <!--
+    Copy the host-RID native binary next to the benchmark output so
+    the NativeLibrary resolver finds it. Mirrors the targets in
+    FulgurNET.Tests but specific to the binary executable output of
+    this project.
+  -->
+  <Target Name="StageNativeForBenchmarks" AfterTargets="Build"
+          Condition="'$(SkipNativeBuild)' != 'true'">
+    <PropertyGroup>
+      <_Arch Condition="'$(HostArchitecture)' != ''">$(HostArchitecture)</_Arch>
+      <_Arch Condition="'$(_Arch)' == ''">x64</_Arch>
+      <_Arch>$(_Arch.ToLower())</_Arch>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('windows'))">win-$(_Arch)</_Rid>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('linux'))">linux-$(_Arch)</_Rid>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('osx'))">osx-$(_Arch)</_Rid>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('windows'))">.dll</_Ext>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('linux'))">.so</_Ext>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('osx'))">.dylib</_Ext>
+      <_File Condition="$([MSBuild]::IsOSPlatform('windows'))">fulgur_native</_File>
+      <_File Condition="!$([MSBuild]::IsOSPlatform('windows'))">libfulgur_native</_File>
+      <_Src>..\fulgur-native\target\release\$(_File)$(_Ext)</_Src>
+      <_Dest>$(OutDir)runtimes\$(_Rid)\native\$(_File)$(_Ext)</_Dest>
+    </PropertyGroup>
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_Dest)'))" />
+    <Copy SourceFiles="$(_Src)" DestinationFiles="$(_Dest)" SkipUnchangedFiles="true"
+          Condition="Exists('$(_Src)')" />
+  </Target>
+
+  <!--
+    DinkToPdf's native dependency is the C-API shared library, not the
+    wkhtmltopdf.exe CLI. On Windows, the wkhtmltopdf installer drops
+    the file as "wkhtmltox.dll", but DinkToPdf (unconditionally) P/Invokes
+    "libwkhtmltox.dll" (the Unix-style name, which wkhtmltopdf also ships
+    that way on Linux/macOS).
+
+    We try a few common install locations and, if we find wkhtmltox.dll,
+    copy it to libwkhtmltox.dll in the benchmark output. This is Windows-
+    only; on Linux/macOS the user is expected to have libwkhtmltox.so /
+    libwkhtmltox.dylib already on the system loader path.
+  -->
+  <Target Name="StageLibWkhtmltox" AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('windows'))">
+    <PropertyGroup>
+      <_LibDest>$(OutDir)libwkhtmltox.dll</_LibDest>
+    </PropertyGroup>
+    <ItemGroup>
+      <_StageScript Include="stage-libwkhtmltox.ps1" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_StageScript)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(OutDir)stage-libwkhtmltox.ps1&quot; -Destination &quot;$(_LibDest)&quot;" />
+  </Target>
+
+  <!--
+    BenchmarkDotNet forks a child process per benchmark class into a
+    separate output subdirectory. We bridge that by letting the benchmark
+    itself stage libwkhtmltox.dll into AppContext.BaseDirectory (see
+    DinkToPdfBench.EnsureLibWkhtmltoxPresent). The MSBuild target above
+    already pre-stages the file into the main output directory as a
+    fast path; the runtime helper is the authoritative fallback.
+  -->
+
+</Project>

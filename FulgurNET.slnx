@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="FulgurNET/FulgurNET.csproj" />
+  <Project Path="FulgurNET.Tests/FulgurNET.Tests.csproj" />
+  <Project Path="FulgurNET.Benchmarks/FulgurNET.Benchmarks.csproj" />
+  <Project Path="examples/HelloFulgur/HelloFulgur.csproj" />
+</Solution>

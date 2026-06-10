@@ -1,0 +1,4 @@
+# This file exists so the directory is tracked by git even when empty.
+# The native binary is dropped here by `BuildNativeForRid` at build
+# time on the matching host platform, and the directory is included
+# in the NuGet package via the wildcard in FulgurNET.csproj.

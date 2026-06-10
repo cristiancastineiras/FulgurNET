@@ -1,0 +1,36 @@
+[package]
+name = "fulgur-native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "C-compatible FFI layer over the fulgur HTML/CSS -> PDF engine"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/fulgur-rs/fulgur"
+publish = false
+
+# cdylib: produces a dynamic library consumable from C# via P/Invoke.
+# We intentionally do NOT also emit rlib — there's nothing to link against
+# from the C# side, and shipping rlib would balloon the artifact for no gain.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pulled from crates.io so the FFI shim builds against the published
+# version. The C# project (and the NuGet package) treats fulgur as a
+# build-time Rust dep, not a runtime one, so no C# binding to fulgur
+# types is generated. The exact version is pinned via `Cargo.lock`.
+fulgur = "0.17"
+
+[build-dependencies]
+# csbindgen scans `src/lib.rs` for `extern "C"` functions and emits a
+# `NativeMethods.g.cs` with matching `[DllImport]` declarations.
+# 1.9.x is the line advertised by Cysharp; pin to the latest 1.9 minor.
+csbindgen = "1.9"
+
+[profile.release]
+# Keep the FFI symbols in release for the same reason C libraries strip
+# only after DllImport verification.
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

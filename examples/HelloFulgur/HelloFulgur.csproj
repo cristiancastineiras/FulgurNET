@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>HelloFulgur</RootNamespace>
+    <AssemblyName>HelloFulgur</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\FulgurNET\FulgurNET.csproj" />
+  </ItemGroup>
+
+  <!--
+    Stage the host-RID native binary next to the example's output so
+    the resolver finds it. The same `HostArchitecture` property the
+    tests use.
+  -->
+  <Target Name="StageNativeForExample" AfterTargets="Build"
+          Condition="'$(SkipNativeBuild)' != 'true'">
+    <PropertyGroup>
+      <_Arch Condition="'$(HostArchitecture)' != ''">$(HostArchitecture)</_Arch>
+      <_Arch Condition="'$(_Arch)' == ''">x64</_Arch>
+      <_Arch>$(_Arch.ToLower())</_Arch>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('windows'))">win-$(_Arch)</_Rid>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('linux'))">linux-$(_Arch)</_Rid>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('osx'))">osx-$(_Arch)</_Rid>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('windows'))">.dll</_Ext>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('linux'))">.so</_Ext>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('osx'))">.dylib</_Ext>
+      <_File Condition="$([MSBuild]::IsOSPlatform('windows'))">fulgur_native</_File>
+      <_File Condition="!$([MSBuild]::IsOSPlatform('windows'))">libfulgur_native</_File>
+      <_Src>..\..\fulgur-native\target\$(Configuration.ToLower())\$(_File)$(_Ext)</_Src>
+      <_Dest>$(OutDir)runtimes\$(_Rid)\native\$(_File)$(_Ext)</_Dest>
+    </PropertyGroup>
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_Dest)'))" />
+    <Copy SourceFiles="$(_Src)" DestinationFiles="$(_Dest)" SkipUnchangedFiles="true"
+          Condition="Exists('$(_Src)')" />
+  </Target>
+
+</Project>

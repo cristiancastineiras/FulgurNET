@@ -1,0 +1,54 @@
+# Git attributes — keep line endings stable across platforms and
+# make generated files obvious in `git diff`.
+
+# Default: Unix line endings for everything.
+*               text=auto eol=lf
+
+# Shell scripts and Windows batch files: keep their native endings.
+*.sh           text eol=lf
+*.bash         text eol=lf
+*.ps1          text eol=crlf
+*.bat          text eol=crlf
+*.cmd          text eol=crlf
+
+# .NET source: keep LF (matches .editorconfig).
+*.cs           text eol=lf
+*.csproj       text eol=lf
+*.slnx         text eol=lf
+*.props        text eol=lf
+*.targets      text eol=lf
+*.config       text eol=lf
+
+# Rust source and Cargo files: LF.
+*.rs           text eol=lf
+*.toml         text eol=lf
+Cargo.lock     text eol=lf
+
+# YAML workflows: LF.
+*.yml          text eol=lf
+*.yaml         text eol=lf
+
+# Markdown: LF, but allow two trailing spaces.
+*.md           text eol=lf -whitespace
+
+# Native binaries shipped in runtimes/<rid>/native/ — never diff them.
+*.dll          binary
+*.so           binary
+*.dylib        binary
+*.pdb          binary
+
+# The auto-generated C# binding is a build artifact. Mark it as such so
+# `git log --follow NativeMethods.g.cs` is sane and so `git blame` can
+# skip it by default.
+NativeMethods.g.cs linguist-generated=true
+
+# Ignore diffs for vendored / generated files when running `git diff
+# --stat`. These files do change, but they should never be the reason a
+# PR fails a review.
+FulgurNET.Tests/bin/**          diff=skip
+FulgurNET.Tests/obj/**          diff=skip
+FulgurNET/bin/**                diff=skip
+FulgurNET/obj/**                diff=skip
+examples/HelloFulgur/bin/**       diff=skip
+examples/HelloFulgur/obj/**       diff=skip
+fulgur-native/target/**           diff=skip

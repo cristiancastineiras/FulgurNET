@@ -1,0 +1,166 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!--
+      Why net10.0 over netstandard2.1:
+        * NativeLibrary.SetDllImportResolver + NativeLibrary.TryLoad
+          (NOT exposed in netstandard2.1, .NET Core 3.0+ only).
+        * Span<byte> + MemoryMarshal.
+        * Marshal.PtrToStringUTF8 (used in NativeVersion).
+        * Modern AOT / trimming-friendly default.
+    -->
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <RootNamespace>FulgurNET</RootNamespace>
+    <AssemblyName>FulgurNET</AssemblyName>
+
+    <!-- NuGet metadata. The GitHub Actions workflow overrides Version at
+         pack-time via `-p:Version=...`, so the value here is the default
+         for local `dotnet pack`. -->
+    <PackageId>FulgurNET</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>FulgurNET contributors</Authors>
+    <Company>FulgurNET contributors</Company>
+    <Copyright>Copyright (c) 2026 fulgur-rs contributors</Copyright>
+    <Title>FulgurNET — C# / .NET SDK for the fulgur-rs HTML-to-PDF engine</Title>
+    <Description>C# / .NET 10 SDK for the fulgur-rs HTML-to-PDF engine, with zero-copy interop via csbindgen. Cross-platform (win/linux/osx × x64/x86/arm64), single-call API, no native pointers in your hands.</Description>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <RepositoryType>git</RepositoryType>
+    <!-- These two get overridden at CI pack-time from the GitHub repo
+         URL via `-p:RepositoryUrl=... -p:PackageProjectUrl=...`. The
+         values here are sensible local fallbacks. -->
+    <RepositoryUrl>https://github.com/cristiancastineiras/FulgurNET</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/cristiancastineiras/FulgurNET</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>pdf;html;css;fulgur;native;aot;net10;csbindgen;ffni;ffi</PackageTags>
+    <PackageIcon>icon.png</PackageIcon>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <!-- Deterministic builds so the .snupkg lines up across machines. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!--
+    Auto-build the native shim before compiling this project. This wires
+    the entire FFI -> NuGet pipeline into a single `dotnet build` /
+    `dotnet pack` invocation, no shell glue required.
+
+    Order of operations:
+      1. `cargo build` (the build.rs in fulgur-native) regenerates
+         `NativeMethods.g.cs` into this folder via csbindgen.
+      2. MSBuild compiles the .cs sources including the freshly
+         regenerated `NativeMethods.g.cs`.
+
+    We do NOT copy the produced `.dll/.so/.dylib` from `target/<profile>/`
+    into `runtimes/<rid>/native/` here — that step is handled by the
+    `BuildNativeForRid` target, which only runs when the caller passes
+    a runtime argument (i.e. `dotnet publish` or `dotnet build -r win-x64`).
+    A bare `dotnet build` is a metadata-only operation: the package
+    includes the RID-keyed binaries via `<None Include="runtimes\**\*" />`
+    and consumers pull the right one for their platform at runtime.
+
+    Skip with `-p:SkipNativeBuild=true` if you're on a machine without
+    cargo (e.g. consuming a prebuilt NuGet in CI on a non-Rust runner).
+  -->
+  <Target Name="BuildNative" BeforeTargets="BeforeBuild"
+          Condition="'$(SkipNativeBuild)' != 'true' AND Exists('..\fulgur-native\Cargo.toml')">
+    <PropertyGroup>
+      <_CargoManifest>..\fulgur-native</_CargoManifest>
+    </PropertyGroup>
+    <Exec Command="cargo build --manifest-path &quot;$(_CargoManifest)\Cargo.toml&quot; --release"
+          WorkingDirectory="$(_CargoManifest)"
+          Condition="'$(Configuration)' == 'Release'" />
+    <Exec Command="cargo build --manifest-path &quot;$(_CargoManifest)\Cargo.toml&quot;"
+          WorkingDirectory="$(_CargoManifest)"
+          Condition="'$(Configuration)' != 'Release'" />
+  </Target>
+
+  <!--
+    Stage the freshly built native library into the right
+    `runtimes/<rid>/native/` folder when the caller specified a runtime
+    (e.g. `dotnet build -c Release -r win-x64`). The host's native
+    file extension is computed from `RuntimeIdentifier` and the OS:
+      * win-*    -> .dll
+      * linux-*  -> .so   (with `lib` prefix on the source filename)
+      * osx-*    -> .dylib(with `lib` prefix on the source filename)
+  -->
+  <Target Name="BuildNativeForRid" AfterTargets="BuildNative"
+          Condition="'$(RuntimeIdentifier)' != '' AND '$(SkipNativeBuild)' != 'true'">
+    <PropertyGroup>
+      <_NativeExt Condition="$(RuntimeIdentifier.StartsWith('win-'))">.dll</_NativeExt>
+      <_NativeExt Condition="$(RuntimeIdentifier.StartsWith('linux-'))">.so</_NativeExt>
+      <_NativeExt Condition="$(RuntimeIdentifier.StartsWith('osx-'))">.dylib</_NativeExt>
+      <_NativeFileName Condition="$(RuntimeIdentifier.StartsWith('win-'))">fulgur_native</_NativeFileName>
+      <_NativeFileName Condition="$(RuntimeIdentifier.StartsWith('linux-'))">libfulgur_native</_NativeFileName>
+      <_NativeFileName Condition="$(RuntimeIdentifier.StartsWith('osx-'))">libfulgur_native</_NativeFileName>
+      <_TargetSubdir Condition="'$(Configuration)' == 'Release'">release</_TargetSubdir>
+      <_TargetSubdir Condition="'$(Configuration)' != 'Release'">debug</_TargetSubdir>
+      <_NativeSource>..\fulgur-native\target\$(_TargetSubdir)\$(_NativeFileName)$(_NativeExt)</_NativeSource>
+      <_NativeDest>runtimes\$(RuntimeIdentifier)\native\$(_NativeFileName)$(_NativeExt)</_NativeDest>
+    </PropertyGroup>
+    <Copy SourceFiles="$(_NativeSource)"
+          DestinationFiles="$(_NativeDest)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(_NativeSource)')" />
+  </Target>
+
+  <!--
+    Ship the RID-keyed native binaries inside the NuGet package. The
+    `<PackagePath>runtimes\</PackagePath>` is the convention .NET's
+    host honors automatically: it picks `runtimes/<rid>/native/*` for
+    the current RID without any code in the consumer.
+  -->
+  <ItemGroup>
+    <None Include="runtimes\**\*"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    Package assets: icon, readme, dual license.
+  -->
+  <ItemGroup>
+    <None Include="icon.png"       Pack="true" PackagePath="" />
+    <None Include="icon.ico"        Pack="false" />
+    <None Include="README.md"       Pack="true" PackagePath="" />
+    <None Include="LICENSE"         Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <!--
+    The demo project lives under `examples/HelloFulgur/` and uses
+    top-level statements. If the SDK's default Compile glob picks it up
+    while building the library project, csc rejects the file with CS8805.
+    Excluding it from the glob is the cheap, durable fix. The demo is
+    only ever built by `dotnet run` with an explicit project path.
+  -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);examples\**\*.cs;examples\**\*.csproj</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <!--
+    RID graph for cross-platform support. We don't hardcode
+    `RuntimeIdentifiers` because that locks the package to a specific
+    set at restore time. `RuntimeSupports` is a hint advertised to the
+    NuGet client. The GitHub Actions matrix in
+    `.github/workflows/build.yml` is the source of truth for which
+    RIDs actually get a prebuilt binary.
+  -->
+  <ItemGroup>
+    <RuntimeSupports Include="win-x64" />
+    <RuntimeSupports Include="win-x86" />
+    <RuntimeSupports Include="win-arm64" />
+    <RuntimeSupports Include="linux-x64" />
+    <RuntimeSupports Include="linux-arm64" />
+    <RuntimeSupports Include="osx-x64" />
+    <RuntimeSupports Include="osx-arm64" />
+  </ItemGroup>
+
+</Project>

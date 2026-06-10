@@ -1,0 +1,114 @@
+# ────────────────────────────────────────────────────────────────────────────
+# Rust (fulgur-native/)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Build artifacts of the FFI shim. rust's default output dir.
+fulgur-native/target/
+
+# We DO commit Cargo.lock — the .dll/.so/.dylib that ends up in the NuGet
+# package must reproduce bit-for-bit across machines, so we want every
+# consumer to resolve the same dependency graph.
+!fulgur-native/Cargo.lock
+
+# rust-analyzer / IDE caches
+.idea/
+*.rs.bk
+**/*.rs.bk
+
+# ────────────────────────────────────────────────────────────────────────────
+# .NET / dotnet CLI
+# ────────────────────────────────────────────────────────────────────────────
+
+# Standard SDK output dirs (covers every project, including examples/).
+**/bin/
+**/obj/
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Test runners
+TestResults/
+*.coverage
+*.coveragexml
+*.trx
+*.testlog
+.coverage
+CoverletOutput*/
+
+# Roslyn / .NET SDK generated
+*.assets.json
+*.nuget.dgspec.json
+*.nuget.g.props
+*.nuget.g.targets
+*.nuget.cache
+project.assets.json
+project.nuget.cache
+
+# ────────────────────────────────────────────────────────────────────────────
+# BenchmarkDotNet artifacts (rebuilt on every `dotnet run -- --full`)
+# ────────────────────────────────────────────────────────────────────────────
+BenchmarkDotNet.Artifacts/
+*.BDN.*.log
+FulgurNET.Benchmarks*/bin/
+
+# ────────────────────────────────────────────────────────────────────────────
+# Local dev logs and scratch
+# ────────────────────────────────────────────────────────────────────────────
+# (keep bench-results.md — that's the published headline numbers)
+bench-*.log
+build-*.log
+*.dmp
+*.pdb.bak
+scratch/
+playground/
+*.pdf.bak
+
+# ────────────────────────────────────────────────────────────────────────────
+# IDEs and editors
+# ────────────────────────────────────────────────────────────────────────────
+
+# Visual Studio
+.vs/
+*.user
+*.userprefs
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# ────────────────────────────────────────────────────────────────────────────
+# OS junk
+# ────────────────────────────────────────────────────────────────────────────
+
+# Windows
+Thumbs.db
+ehthumbs.db
+ehthumbs_view.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS / Linux
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ────────────────────────────────────────────────────────────────────────────
+# Misc build / format artifacts
+# ────────────────────────────────────────────────────────────────────────────
+*.exp
+*.ilk
+*.tmp
+*.dll.config
+publish/

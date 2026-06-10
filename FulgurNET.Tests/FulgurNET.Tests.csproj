@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FulgurNET\FulgurNET.csproj" />
+  </ItemGroup>
+
+  <!--
+    Copy the host-RID native binary next to the test assembly so
+    `dotnet test` can find it without a full NuGet restore. The path
+    matches the resolver's first candidate: runtimes/<rid>/native/<lib>.
+
+    `$(Architecture)` is a built-in MSBuild property but it's often
+    empty in plain `dotnet build` (it's only set when building a
+    RID-specific package). The user can override with
+    `-p:HostArchitecture=x64`. If unset we default to `x64` — the
+    most common host for the development machine this was authored
+    on; CI runs should set it explicitly per matrix.
+  -->
+  <Target Name="StageNativeForTests" AfterTargets="Build"
+          Condition="'$(SkipNativeBuild)' != 'true'">
+    <PropertyGroup>
+      <_Arch Condition="'$(HostArchitecture)' != ''">$(HostArchitecture)</_Arch>
+      <_Arch Condition="'$(Architecture)' != '' AND '$(_Arch)' == ''">$(Architecture)</_Arch>
+      <_Arch Condition="'$(_Arch)' == ''">x64</_Arch>
+      <_Arch>$(_Arch.ToLower())</_Arch>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('windows'))">win-$(_Arch)</_Rid>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('linux'))">linux-$(_Arch)</_Rid>
+      <_Rid Condition="$([MSBuild]::IsOSPlatform('osx'))">osx-$(_Arch)</_Rid>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('windows'))">.dll</_Ext>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('linux'))">.so</_Ext>
+      <_Ext Condition="$([MSBuild]::IsOSPlatform('osx'))">.dylib</_Ext>
+      <_File Condition="$([MSBuild]::IsOSPlatform('windows'))">fulgur_native</_File>
+      <_File Condition="!$([MSBuild]::IsOSPlatform('windows'))">libfulgur_native</_File>
+      <_Src>..\fulgur-native\target\$(Configuration.ToLower())\$(_File)$(_Ext)</_Src>
+      <_Dest>$(OutDir)runtimes\$(_Rid)\native\$(_File)$(_Ext)</_Dest>
+    </PropertyGroup>
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_Dest)'))" />
+    <Copy SourceFiles="$(_Src)" DestinationFiles="$(_Dest)" SkipUnchangedFiles="true"
+          Condition="Exists('$(_Src)')" />
+  </Target>
+
+</Project>

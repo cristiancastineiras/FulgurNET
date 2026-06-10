@@ -1,0 +1,270 @@
+name: Build and publish NuGet package
+
+on:
+  push:
+    branches: [ master ]
+    tags:    [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+# Cancel in-progress runs of the same branch on a new push — saves CI
+# minutes when iterating quickly.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  # ─── Job 1: per-RID build + test + Rust unit tests ──────────────────────
+  # One runner per (OS, arch) combination. Each runner:
+  #   * builds the Rust FFI shim for its target,
+  #   * stages the produced binary into `runtimes/<rid>/native/`,
+  #   * runs the xUnit end-to-end tests against the real native lib,
+  #   * uploads the native binary + the entire `runtimes/<rid>/native/`
+  #     folder as an artifact for the pack job to consume.
+  build:
+    name: Build & test (${{ matrix.os }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu,  arch: x64,   cargo_target: x86_64-unknown-linux-gnu,  rid: linux-x64,    lib: libfulgur_native.so    }
+          - { os: ubuntu,  arch: arm64, cargo_target: aarch64-unknown-linux-gnu, rid: linux-arm64,  lib: libfulgur_native.so    }
+          - { os: windows, arch: x64,   cargo_target: x86_64-pc-windows-msvc,    rid: win-x64,      lib: fulgur_native.dll       }
+          - { os: windows, arch: x86,   cargo_target: i686-pc-windows-msvc,      rid: win-x86,      lib: fulgur_native.dll       }
+          - { os: windows, arch: arm64, cargo_target: aarch64-pc-windows-msvc,   rid: win-arm64,    lib: fulgur_native.dll       }
+          - { os: macos,   arch: x64,   cargo_target: x86_64-apple-darwin,       rid: osx-x64,      lib: libfulgur_native.dylib }
+          - { os: macos,   arch: arm64, cargo_target: aarch64-apple-darwin,      rid: osx-arm64,    lib: libfulgur_native.dylib }
+
+    runs-on: ${{ matrix.os }}-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false   # fulgur and csbindgen come from crates.io, not as submodules
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cargo_target }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fulgur-native/target
+          key: ${{ runner.os }}-${{ matrix.cargo_target }}-cargo-${{ hashFiles('fulgur-native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.cargo_target }}-cargo-
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore .NET dependencies
+        run: dotnet restore
+
+      - name: Build the FFI shim (cargo) for ${{ matrix.cargo_target }}
+        working-directory: fulgur-native
+        run: cargo build --release --target ${{ matrix.cargo_target }}
+
+      - name: Run Rust unit tests
+        working-directory: fulgur-native
+        run: cargo test --release
+
+      - name: Build the .NET library (stages the native binary into runtimes/)
+        run: >-
+          dotnet build FulgurNET/FulgurNET.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          -p:HostArchitecture=${{ matrix.arch }}
+          --no-restore
+
+      - name: Run end-to-end xUnit tests against the real native binary
+        run: >-
+          dotnet test FulgurNET.Tests/FulgurNET.Tests.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          -p:HostArchitecture=${{ matrix.arch }}
+          --no-build
+          --verbosity normal
+
+      - name: Upload the per-RID native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: FulgurNET/runtimes/${{ matrix.rid }}/native/${{ matrix.lib }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # ─── Job 2: assemble the multi-RID NuGet package ─────────────────────────
+  # Runs on a single Linux runner regardless of branch — it only needs
+  # .NET and the per-RID native binaries uploaded by job 1. Skipped on
+  # pull requests (we don't want CI-built packages from forks uploaded
+  # anywhere).
+  pack:
+    name: Assemble multi-RID NuGet
+    needs: build
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Download every per-RID native binary
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+          merge-multiple: true
+
+      - name: Stage all per-RID binaries into FulgurNET/runtimes/
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The artifact name is `native-<rid>` and each contains a single
+          # file at the top level (because we uploaded with `path:` pointing
+          # directly at the file). Move each one to the matching RID folder.
+          shopt -s nullglob
+          for f in native/*; do
+            echo "Staged artifact: $f"
+            ls -la "$f"
+          done
+          # Each artifact is a single file with the library's on-disk name
+          # (libfulgur_native.so / fulgur_native.dll / libfulgur_native.dylib).
+          # We don't know the source file's exact name; we just place
+          # whatever is inside the artifact at `runtimes/<rid>/native/`.
+          for d in native/native-*; do
+            rid="${d#native/native-}"
+            mkdir -p "FulgurNET/runtimes/${rid}/native"
+            # Copy the entire content of the artifact dir (file at top).
+            find "$d" -maxdepth 1 -type f -exec cp {} "FulgurNET/runtimes/${rid}/native/" \;
+          done
+          echo "Final runtimes/ tree:"
+          find FulgurNET/runtimes -type f | sort
+
+      - name: Pack the multi-RID NuGet package
+        env:
+          # On tag pushes use the stripped tag name. On master use a CI
+          # version so the artifact is identifiable in the Actions UI.
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-ci-{0}', github.run_number) }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          echo "Packaging version: $VERSION"
+          echo "Repository URL:    $REPO_URL"
+          dotnet pack FulgurNET/FulgurNET.csproj \
+            -c Release \
+            -p:Version=$VERSION \
+            -p:RepositoryUrl=$REPO_URL \
+            -p:PackageProjectUrl=$REPO_URL \
+            --no-build \
+            -o ./artifacts
+
+      - name: Inspect the produced .nupkg
+        shell: bash
+        run: |
+          echo "Files inside the .nupkg:"
+          unzip -l artifacts/*.nupkg | sort
+          echo ""
+          echo "RID-keyed native binaries in the package:"
+          unzip -l artifacts/*.nupkg | grep -E "\.(dll|so|dylib)$" | sort
+
+      - name: Upload multi-RID NuGet as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: artifacts/*.nupkg
+          if-no-files-found: error
+          retention-days: 90
+
+  # ─── Job 3: publish to nuget.org on tag push (OIDC trusted publishing) ──
+  publish:
+    name: Publish to nuget.org
+    needs: pack
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    # Required for nuget.org trusted publishing (OIDC token issuance).
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download the multi-RID NuGet
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-package
+          path: nugetPackage
+
+      - name: Show what we're about to push
+        shell: bash
+        run: |
+          ls -la nugetPackage/
+          echo "---"
+          unzip -l nugetPackage/*.nupkg | grep -E "runtimes/|\.(dll|so|dylib)$" | sort
+
+      # Exchange the GitHub OIDC token for a short-lived NuGet API key.
+      # The username is the user's nuget.org profile name (NOT email).
+      - name: NuGet login (OIDC → temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push package to nuget.org
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Validate the .nupkg locally before pushing — much faster
+          # feedback than waiting for nuget.org to reject it.
+          dotnet nuget verify nugetPackage/*.nupkg
+
+          dotnet nuget push "nugetPackage/*.nupkg" \
+            --api-key "${NUGET_API_KEY}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          artifacts: "nugetPackage/*.nupkg"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generateReleaseNotes: true
+          allowUpdates: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
