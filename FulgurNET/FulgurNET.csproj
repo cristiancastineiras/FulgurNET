@@ -58,27 +58,48 @@
       2. MSBuild compiles the .cs sources including the freshly
          regenerated `NativeMethods.g.cs`.
 
-    We do NOT copy the produced `.dll/.so/.dylib` from `target/<profile>/`
-    into `runtimes/<rid>/native/` here — that step is handled by the
-    `BuildNativeForRid` target, which only runs when the caller passes
-    a runtime argument (i.e. `dotnet publish` or `dotnet build -r win-x64`).
-    A bare `dotnet build` is a metadata-only operation: the package
-    includes the RID-keyed binaries via `<None Include="runtimes\**\*" />`
-    and consumers pull the right one for their platform at runtime.
+    Path handling: we build the manifest path with `$(MSBuildThisFileDirectory)`
+    + `..\fulgur-native` and let .NET normalize the separators per host
+    OS. Hardcoding `..\fulgur-native\...` only works on Windows and
+    breaks `cargo` on Linux/macOS ("manifest path does not exist").
+
+    Cross-compile: when the caller passes `-r <rid>` (e.g. win-x64,
+    linux-arm64), we also forward the right `--target` to `cargo` so
+    the produced `.dll/.so/.dylib` matches the host architecture the
+    .NET build is targeting. The RID -> cargo target map mirrors the
+    `matrix` in `.github/workflows/build.yml`. We do NOT call rustup
+    to install the target here — that's the caller's job (the GitHub
+    Actions step does it explicitly with `dtolnay/rust-toolchain`).
 
     Skip with `-p:SkipNativeBuild=true` if you're on a machine without
-    cargo (e.g. consuming a prebuilt NuGet in CI on a non-Rust runner).
+    cargo (e.g. consuming a prebuilt NuGet in CI on a non-Rust runner),
+    or if the workflow already built the native lib for you and just
+    needs the .NET side compiled.
   -->
   <Target Name="BuildNative" BeforeTargets="BeforeBuild"
-          Condition="'$(SkipNativeBuild)' != 'true' AND Exists('..\fulgur-native\Cargo.toml')">
+          Condition="'$(SkipNativeBuild)' != 'true' AND Exists('$(MSBuildThisFileDirectory)..\fulgur-native\Cargo.toml') AND '$(SkipNativeBuildIfBuilt)' != 'true'">
     <PropertyGroup>
-      <_CargoManifest>..\fulgur-native</_CargoManifest>
+      <_NativeRoot>$(MSBuildThisFileDirectory)..\fulgur-native\</_NativeRoot>
+      <!-- Map common RIDs to cargo --target triples. Unrecognized RIDs
+           fall back to the host default (no --target flag), which is
+           fine for developer machines where RID == host arch. -->
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'win-x64'">x86_64-pc-windows-msvc</_CargoTarget>
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'win-x86'">i686-pc-windows-msvc</_CargoTarget>
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'win-arm64'">aarch64-pc-windows-msvc</_CargoTarget>
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'linux-x64'">x86_64-unknown-linux-gnu</_CargoTarget>
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'linux-arm64'">aarch64-unknown-linux-gnu</_CargoTarget>
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'linux-musl-x64'">x86_64-unknown-linux-musl</_CargoTarget>
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'osx-x64'">x86_64-apple-darwin</_CargoTarget>
+      <_CargoTarget Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">aarch64-apple-darwin</_CargoTarget>
+      <!-- Pre-build the trailing flag so the Exec command stays readable. -->
+      <_CargoTargetFlag Condition="'$(RuntimeIdentifier)' != '' AND '$(_CargoTarget)' != ''"> --target $(_CargoTarget)</_CargoTargetFlag>
+      <_CargoTargetFlag Condition="'$(RuntimeIdentifier)' == '' OR '$(_CargoTarget)' == ''"></_CargoTargetFlag>
     </PropertyGroup>
-    <Exec Command="cargo build --manifest-path &quot;$(_CargoManifest)\Cargo.toml&quot; --release"
-          WorkingDirectory="$(_CargoManifest)"
+    <Exec Command="cargo build --manifest-path &quot;$(_NativeRoot)Cargo.toml&quot; --release$(_CargoTargetFlag)"
+          WorkingDirectory="$(_NativeRoot)"
           Condition="'$(Configuration)' == 'Release'" />
-    <Exec Command="cargo build --manifest-path &quot;$(_CargoManifest)\Cargo.toml&quot;"
-          WorkingDirectory="$(_CargoManifest)"
+    <Exec Command="cargo build --manifest-path &quot;$(_NativeRoot)Cargo.toml&quot;$(_CargoTargetFlag)"
+          WorkingDirectory="$(_NativeRoot)"
           Condition="'$(Configuration)' != 'Release'" />
   </Target>
 
@@ -102,7 +123,12 @@
       <_NativeFileName Condition="$(RuntimeIdentifier.StartsWith('osx-'))">libfulgur_native</_NativeFileName>
       <_TargetSubdir Condition="'$(Configuration)' == 'Release'">release</_TargetSubdir>
       <_TargetSubdir Condition="'$(Configuration)' != 'Release'">debug</_TargetSubdir>
-      <_NativeSource>..\fulgur-native\target\$(_TargetSubdir)\$(_NativeFileName)$(_NativeExt)</_NativeSource>
+      <!-- Cargo drops cross-compiled artifacts under
+           target/&lt;triple&gt;/&lt;profile&gt;/; for host builds (no --target) it
+           skips the triple directory. _CargoTargetSubdir is set to the
+           triple when we passed one to cargo, otherwise empty. -->
+      <_CargoTargetSubdir>$(_CargoTarget)</_CargoTargetSubdir>
+      <_NativeSource>$(MSBuildThisFileDirectory)..\fulgur-native\target\$(_CargoTargetSubdir)\$(_TargetSubdir)\$(_NativeFileName)$(_NativeExt)</_NativeSource>
       <_NativeDest>runtimes\$(RuntimeIdentifier)\native\$(_NativeFileName)$(_NativeExt)</_NativeDest>
     </PropertyGroup>
     <Copy SourceFiles="$(_NativeSource)"
@@ -155,7 +181,6 @@
   -->
   <ItemGroup>
     <RuntimeSupports Include="win-x64" />
-    <RuntimeSupports Include="win-x86" />
     <RuntimeSupports Include="win-arm64" />
     <RuntimeSupports Include="linux-x64" />
     <RuntimeSupports Include="linux-arm64" />

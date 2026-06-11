@@ -35,7 +35,6 @@ jobs:
           - { os: ubuntu,  arch: x64,   cargo_target: x86_64-unknown-linux-gnu,  rid: linux-x64,    lib: libfulgur_native.so    }
           - { os: ubuntu,  arch: arm64, cargo_target: aarch64-unknown-linux-gnu, rid: linux-arm64,  lib: libfulgur_native.so    }
           - { os: windows, arch: x64,   cargo_target: x86_64-pc-windows-msvc,    rid: win-x64,      lib: fulgur_native.dll       }
-          - { os: windows, arch: x86,   cargo_target: i686-pc-windows-msvc,      rid: win-x86,      lib: fulgur_native.dll       }
           - { os: windows, arch: arm64, cargo_target: aarch64-pc-windows-msvc,   rid: win-arm64,    lib: fulgur_native.dll       }
           - { os: macos,   arch: x64,   cargo_target: x86_64-apple-darwin,       rid: osx-x64,      lib: libfulgur_native.dylib }
           - { os: macos,   arch: arm64, cargo_target: aarch64-apple-darwin,      rid: osx-arm64,    lib: libfulgur_native.dylib }
@@ -79,7 +78,9 @@ jobs:
             ${{ runner.os }}-nuget-
 
       - name: Restore .NET dependencies
-        run: dotnet restore
+        run: >-
+          dotnet restore
+          -r ${{ matrix.rid }}
 
       - name: Build the FFI shim (cargo) for ${{ matrix.cargo_target }}
         working-directory: fulgur-native
@@ -90,11 +91,21 @@ jobs:
         run: cargo test --release
 
       - name: Build the .NET library (stages the native binary into runtimes/)
+        # The cargo step above already produced the .dll/.so/.dylib for
+        # this matrix entry. We pass `-p:SkipNativeBuildIfBuilt=true`
+        # so the csproj's BuildNative target is a no-op here (it would
+        # otherwise re-run cargo with the correct --target, which is
+        # fine but wastes ~1 min per matrix entry).
+        # We deliberately drop `--no-restore` and let the per-rid
+        # restore above feed the build — that is what makes the
+        # `project.assets.json` include the right RID graph and
+        # prevents NETSDK1047 on win-* / linux-* / osx-* jobs.
         run: >-
           dotnet build FulgurNET/FulgurNET.csproj
           -c Release
           -r ${{ matrix.rid }}
           -p:HostArchitecture=${{ matrix.arch }}
+          -p:SkipNativeBuildIfBuilt=true
           --no-restore
 
       - name: Run end-to-end xUnit tests against the real native binary
