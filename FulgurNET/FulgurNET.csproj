@@ -64,9 +64,9 @@
     breaks `cargo` on Linux/macOS ("manifest path does not exist").
 
     Cross-compile: when the caller passes `-r <rid>` (e.g. win-x64,
-    linux-arm64), we also forward the right `--target` to `cargo` so
+    linux-arm64), we also forward the right target flag to `cargo` so
     the produced `.dll/.so/.dylib` matches the host architecture the
-    .NET build is targeting. The RID -> cargo target map mirrors the
+    .NET build is targeting. The RID to cargo target map mirrors the
     `matrix` in `.github/workflows/build.yml`. We do NOT call rustup
     to install the target here — that's the caller's job (the GitHub
     Actions step does it explicitly with `dtolnay/rust-toolchain`).
